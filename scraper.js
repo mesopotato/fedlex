@@ -4,7 +4,7 @@ const Database = require('./db');
 async function scrapeWebsite() {
     let browser;
     try {
-        browser = await puppeteer.launch({ headless: true });
+        browser = await puppeteer.launch({ headless: false });
         const page = await browser.newPage();
 
         // Enable request interception to block ad-related requests
@@ -38,7 +38,7 @@ async function scrapeWebsite() {
             }
         }
 
-        await page.goto('https://www.gesetze.ch/');
+        await page.goto('https://www.gesetze.ch/', {waitUntil: 'networkidle0', timeout: 120000});
 
         // Close any pop-up that might be open when the page loads
         await closePopUps(page);    
@@ -64,7 +64,7 @@ async function scrapeWebsite() {
                 }
             });        
 
-            await subPage.goto(link);
+            await subPage.goto(link, {waitUntil: 'networkidle0', timeout: 120000});
             await closePopUps(subPage); 
 
             // Extract links that start with a two-digit number
@@ -107,10 +107,12 @@ async function scrapeWebsite() {
 
 }
 async function navigateAndProcessFedlexPage(page, url) {
-    await page.goto(url);
+    await page.goto(url , {waitUntil: 'networkidle0', timeout: 120000});
 
+    console.log(`navigated to URL: ${url}`);
     // Wait for the content to load, adjust the selector as needed
     await page.waitForSelector('#content');
+    console.log('Content loaded');
 
     // Extract and navigate each link within the #content div
     const linksInContent = await page.evaluate(() => {
@@ -131,11 +133,11 @@ async function navigateAndProcessFedlexPage(page, url) {
 async function navigateToLawText(page, url) {
     try {
         
-        await page.goto(url, { waitUntil: 'networkidle0' });
+        await page.goto(url, {waitUntil: 'networkidle0', timeout: 120000});
         await page.waitForSelector('#preface'); // Ensure the 'preface' div is fully loaded
 
         // Extract static data with corrected selectors
-        const srnNummer = await page.$eval('#preface .srnummer', el => el.textContent.trim());
+        const srn = await page.$eval('#preface .srnummer', el => el.textContent.trim());
         const title = await page.$eval('#preface h1', el => {
             // Replace <br> tags with a space
             el.querySelectorAll('br').forEach(br => br.replaceWith(' '));
@@ -163,10 +165,29 @@ async function navigateToLawText(page, url) {
             
             return element ? element.textContent.trim() : " ";
         });
-        const preamble = await page.$eval('#preamble', el => el.innerText.trim());
+        const preamble = await page.$eval('#preamble', (el) => {
+            // Define a function to process footnotes within the text element
+            const processFootnotes = (textElement) => {
+                const anchors = textElement.querySelectorAll('sup a');
+                for (const anchor of anchors) {
+                    const fragment = anchor.getAttribute('href').split('#')[1];
+                    if (fragment) {
+                        const footnoteElement = document.querySelector(`div.footnotes *[id="${fragment}"]`);
+                        if (footnoteElement) {
+                            const footnoteText = ` footnote{${footnoteElement.textContent.trim()}}`;
+                            anchor.outerHTML = footnoteText; // Replace the <a> element with the footnote text
+                        }
+                    }
+                }
+                return textElement.textContent.trim();
+            };
+        
+            // Process footnotes and return the modified text
+            return processFootnotes(el);
+        });
         const status = await page.evaluate(() => {
-            const inForceStatus = document.querySelector('#sidebar app-in-force-status .soft-green');
-            return inForceStatus ? "in Kraft" : "nicht in Kraft";
+            const inForceStatus = document.querySelector('#sidebar app-in-force-status');
+            return inForceStatus ? inForceStatus.textContent.trim() : "Status unbekannt";
         });
 
         // Dynamically extract data from #annexeContent
@@ -196,7 +217,7 @@ async function navigateToLawText(page, url) {
 
         // Construct the complete lawTextData object
         const lawTextData = {
-            srnNummer,
+            srn,
             title,
             preface,
             preamble,
@@ -210,15 +231,17 @@ async function navigateToLawText(page, url) {
         // Insert the law text data into the database
         await db.insertOrUpdateLawText(lawTextData);
 
-        const articlesData = await extractArticles(page, lawTextData.srnNummer, lawTextData.shortName);
-
-        // Insert each article paragraph data into the database
-        for (const data of articlesData) {
-            await db.insertArticle(data);
+        try {
+            const articlesData = await extractArticles(page, lawTextData.srn, lawTextData.shortName);
+           // console.log(articlesData);
+           console.log(`Extracted ${articlesData.length} articles for SRN: ${lawTextData.srn}`);
+           for (const data of articlesData) {
+                await db.insertOrUpdateArticle(data);
             //console.log(data);
-        }
-        
-
+            }
+        } catch (error) {
+            console.error('Error extracting articles:', error);
+        }     
 
     } catch (error) {
         console.error('Error navigating to or processing law text:', error.message);
@@ -226,16 +249,82 @@ async function navigateToLawText(page, url) {
     }
 }
 
-async function extractArticles(page, srnNummer, shortName) {
+async function extractArticles(page, srn, shortName) {
     // Extract and insert articles into the database
-    const articlesData = await page.evaluate((srnNummer, shortName) => {
-        const articles = Array.from(document.querySelectorAll('article'));
+    const articlesData = await page.evaluate((srn, shortName) => {
+        // Extract and insert articles into the database
+        let articles = [];
+
+        articles = Array.from(document.querySelectorAll('article'));
         const results = [];
 
+        //console.log('articles', articles);
+
         articles.forEach(article => {
+            let book_id = '', book_name = '';
+            let part_id = '', part_name = '';
+            let title_id = '', title_name = '';
+            let sub_title_id = '', sub_title_name = '';
+            let chapter_id = '', chapter_name = '';
+            let sub_chapter_id = '', sub_chapter_name = '';
+            let section_id = '', section_name = '';
+            let sub_section_id = '', sub_section_name = '';
+            let ariaLevel = '';
+
+            // Navigate up to find the closest section and check heading levels
+            let currentElement = article.closest('section');
+            while (currentElement) {
+                const heading = currentElement.querySelector('.heading');
+                if (heading) {
+                    const headingText = heading.textContent.trim();
+                    const matches = headingText.match(/\d+/);
+                    const id = matches ? matches[0] : '';
+
+                    // when section is empty fill section with text of heading
+                    if (sub_section_name === '') {
+                        sub_section_name = headingText;
+                        sub_section_id = id;
+
+                    } else if (section_name === '') {
+                        section_name = headingText;
+                        section_id = id;
+                       
+                    } else if (sub_chapter_name === '') {
+                        sub_chapter_name = headingText;
+                        sub_chapter_id = id;
+
+                    }else if (chapter_name === '') {
+                        chapter_name = headingText;
+                        chapter_id = id;
+
+                    } else if (sub_title_name === '') {
+                        sub_title_name = headingText;
+                        sub_title_id = id;    
+
+                    } else if (title_name === '') {
+                        title_name = headingText;
+                        title_id = id;
+
+                    } else if (part_name === '') {
+                        part_name = headingText;
+                        part_id = id;
+
+                    } else if (book_name === '') {
+                        book_name = headingText;
+                        book_id = id;
+                    }
+                }
+                // Continue up the hierarchy only if necessary
+                if (heading && (heading.tagName !== 'H1' && ariaLevel !== '1' )) {
+                    currentElement = currentElement.parentElement.closest('section');
+                    continue;
+                }
+                break; // No need to go further if we've processed an H1 
+            }
+
             const articleId = article.id; // Assumes article IDs are in the format 'art_X'
             // Safely extract article name considering nested elements
-            const headingElement = article.querySelector('h6.heading');
+            const headingElement = article.querySelector('.heading');
 
             let articleName = headingElement ? headingElement.innerText.trim() : '';
 
@@ -249,7 +338,7 @@ async function extractArticles(page, srnNummer, shortName) {
                         const footnoteElement = document.querySelector(`div.footnotes *[id="${fragment}"]`);
                         if (footnoteElement) {
                             const footnoteContent = footnoteElement.textContent.trim();
-                            footnoteTextForHeading += ` footnote(${footnoteContent})`;
+                            footnoteTextForHeading += ` footnote{${footnoteContent}}`;
                             anchor.outerHTML = ''; // Remove the sup element from the heading
                         }
                     }
@@ -258,72 +347,156 @@ async function extractArticles(page, srnNummer, shortName) {
                 articleName = headingElement.textContent.trim() + footnoteTextForHeading;
             }
             
-            const paragraphs = article.querySelectorAll('div.collapseable > p, div.collapseable > dl');
-
+            const paragraphs = article.querySelectorAll('div.collapseable > p, div.collapseable > dl, div.collapseable > div.table');
+            let ziffer_name = ''; // This will store the name or content of italic paragraphs
+            let ziffer_id = ''; // This will store the id of the ziffer   
+            let reference = '';
+            let prepend = '';
             paragraphs.forEach((element, index) => {
-                // Initial check if the element is <dl> to append it to the previous textWithFootnotes
-                if (element.tagName.toLowerCase() === 'dl' && results.length > 0) {
-                    const dlText = Array.from(element.children).map(dlChild => {
-                        if (dlChild.tagName.toLowerCase() === 'dt') {
-                            return `\n${dlChild.textContent.trim()}:`;
-                        } else if (dlChild.tagName.toLowerCase() === 'dd') {
-                            return ` ${dlChild.textContent.trim()}`;
-                        }
-                        return '';
-                    }).join('');
-
-                    // Append DL text to the last inserted paragraph's text
-                    results[results.length - 1].text_w_footnotes += dlText;
-                } else {
-                    let absatz = '';
-                    if (element.firstChild && element.firstChild.tagName === 'SUP') {
-                        // Check if the first child node of the paragraph is a <sup> element
-                        absatz = element.firstChild.textContent.trim();
+                let absatz = '';
+            
+                if (element.firstChild && element.firstChild.tagName === 'SUP') {
+                    // Check if the first child node of the paragraph is a <sup> element
+                    absatz = element.firstChild.textContent.trim();
+                    // check if the next sibling is a sup element
+                    sibling = element.firstChild.nextSibling;
+                    if (sibling && sibling.tagName === 'SUP' && sibling.firstChild.tagName !== 'A') {
+                        // check if the sub is not a a tag
+                        if (sibling.firstChild.tagName !== 'A') {
+                            absatz += sibling.textContent.trim();
+                        } 
                     }
-                    let textWithFootnotes = element.innerHTML.trim();
-                    const footnotesAnchors = element.querySelectorAll('sup a');
-
-                    for (const anchor of footnotesAnchors) {
-                        // Extract the fragment identifier from the anchor's href attribute
+                }
+            
+                let textWithFootnotes = element.innerHTML.trim();
+                const footnotesAnchors = element.querySelectorAll('sup a');
+            
+                const processFootnotes = (textElement) => {
+                    const anchors = textElement.querySelectorAll('sup a');
+                    for (const anchor of anchors) {
                         const fragment = anchor.getAttribute('href').split('#')[1];
                         if (fragment) {
-                            // Find the footnote in the document using the extracted fragment
                             const footnoteElement = document.querySelector(`div.footnotes *[id="${fragment}"]`);
                             if (footnoteElement) {
-                                // Construct the footnote text
-                                const footnoteText = ` footnote(${footnoteElement.textContent.trim()})`;
-                                // Replace the anchor's HTML with the footnote text
+                                const footnoteText = ` footnote{${footnoteElement.textContent.trim()}}`;
                                 anchor.outerHTML = footnoteText;
                             }
                         }
                     }
+                    return textElement.textContent.trim();
+                };
+            
+                // Check if the paragraph is italic and start with a number
+                const style = window.getComputedStyle(element);
+                const v = processFootnotes(element);
+                if (style.fontStyle === 'italic' && ( /^\d/.test(v) || v.toLowerCase() === 'übergangsbestimmung' ))   {
+                    ziffer_name = processFootnotes(element);
+                    // Extract the first numeric value as ziffer_id
+                    const matches = ziffer_name.match(/\d+/); // Regex to find the first sequence of digits
+                    if (matches) {
+                        ziffer_id = matches[0]; // Assign the first matching group as the ziffer_id
+                    }
+                } else if (style.fontStyle === 'italic') { // store the italic text in prepend variable
+                    prepend = processFootnotes(element);
+                    // if prepend is not empty and ends with :
+                    if (prepend.trim().endsWith(':')) {
+                        prepend = prepend.trim(); // Remove any extra spaces
+                    } else { // if prepend is not empty and does not end with : then append it to the last inserted paragraph's text
+                        if (results.length > 0 && results[results.length - 1])   {
+                            let lastIndex = results.length - 1; // To avoid multiple access to results.length - 1
+                            results[lastIndex].text_w_footnotes = `${results[lastIndex].text_w_footnotes}\n${prepend}`;
+                            prepend = ''; // Reset the prepend after appending it
+                        }    
+                    }
 
-                    textWithFootnotes = element.textContent.trim(); 
+                } else if (element.tagName.toLowerCase() === 'p' && element.classList.contains('referenz')) {
+                    console.log('reference', element);
+                    reference = processFootnotes(element);
+                } else if (element.tagName.toLowerCase() === 'dl' && results.length > 0) {
+                    const dlText = Array.from(element.children).map(dlChild => {
+                        if (dlChild.tagName.toLowerCase() === 'dt') {
+                            return `\n${processFootnotes(dlChild)}:`;
+                        } else if (dlChild.tagName.toLowerCase() === 'dd') {
+                            return ` ${processFootnotes(dlChild)}`;
+                        }
+                        return '';
+                    }).join('');
+                
+                    // Append DL text to the last inserted paragraph's text
+                    results[results.length - 1].text_w_footnotes += dlText;
 
-                    results.push({
-                        srnNummer: srnNummer, 
-                        shortName: shortName,
-                        article_id: articleId,
-                        article_name: articleName,
-                        absatz: absatz,
-                        text_w_footnotes: textWithFootnotes
-                    });
+                } else if (element.className.toLowerCase() === 'table' && results.length > 0) {
+                    const tableText = Array.from(element.querySelectorAll('tr')).map(tr => {
+                        return Array.from(tr.querySelectorAll('td')).map(td => {
+                            return processFootnotes(td); // Process each cell similarly
+                        }).join(' | '); // Separate columns by " | "
+                    }).join('\n'); // Separate rows by new line
+            
+                    // Append table text to the last inserted paragraph's text with an "absatz" separator
+                    results[results.length - 1].text_w_footnotes += `\n ${tableText}\n`;
+                    results[results.length - 1].text_w_footnotes += tableText;  
+
+                    // append p tag text to the last inserted paragraph's text if absatz is empty AND same article_id
+                } else if (element.tagName.toLowerCase() === 'p' && results.length > 0 && results[results.length - 1].article_id.trim() === articleId.trim() && absatz.trim().length === 0) {
+                    results[results.length - 1].text_w_footnotes += `\n${processFootnotes(element)}\n`; 
+
+                } else {
+                    textWithFootnotes = processFootnotes(element); // Process any footnotes within <p> or similar tags
+
+                    // Prepend the reference to the text if it exists
+                    if (prepend && textWithFootnotes.trim().length > 0 && prepend.trim().length > 0) {
+                        console.log('prepending reference', reference);
+                        textWithFootnotes = `SubTitle{ ${prepend}}\n ${textWithFootnotes}`;
+                        prepend = ''; // Reset the reference after prepending it
+                    }  
+
+                    if (textWithFootnotes.trim().length > 0) {
+                        results.push({
+                            srn: srn, 
+                            shortName: shortName,
+                            book_id: book_id,
+                            book_name: book_name,
+                            part_id: part_id,
+                            part_name: part_name,
+                            title_id: title_id,
+                            title_name: title_name,
+                            sub_title_id: sub_title_id,
+                            sub_title_name: sub_title_name,
+                            chapter_id: chapter_id,
+                            chapter_name: chapter_name,
+                            sub_chapter_id: sub_chapter_id,
+                            sub_chapter_name: sub_chapter_name,
+                            section_id: section_id,
+                            section_name: section_name,
+                            sub_section_id: sub_section_id,
+                            sub_section_name: sub_section_name,
+                            article_id: articleId,
+                            article_name: articleName,
+                            reference: reference,
+                            ziffer_id: ziffer_id,
+                            ziffer_name: ziffer_name, 
+                            absatz: absatz,
+                            text_w_footnotes: textWithFootnotes
+                        });
+                    }
                 }
             });
         });
-
         return results;
-    }, srnNummer, shortName); // Pass the srnNummer and shortName to the page context
+    }, srn, shortName); // Pass the srn and shortName to the page context
     return articlesData;
 }
 
 const db = new Database();
 
-//db.dropTable('lawText')
-//db.dropTable('articles')
-//db.dropTable('errorLog')
-//db.createTables();
-//db.createErrorTable();
+db.dropTable('lawText')
+db.dropTable('articles')
+db.dropTable('errorLog')
+db.dropTable('lawText_history')
+db.dropTable('articles_history')
+db.createTables();
+db.createErrorTable();
+db.createHistoryTables();
 
 // Start the scraping process after finisching close the connection to db with db.close()
 scrapeWebsite().catch(console.error);
