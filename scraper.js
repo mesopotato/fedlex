@@ -4,7 +4,7 @@ const Database = require('./db');
 async function scrapeWebsite() {
     let browser;
     try {
-        browser = await puppeteer.launch({ headless: false });
+        browser = await puppeteer.launch({ headless: true });
         const page = await browser.newPage();
 
         // Enable request interception to block ad-related requests
@@ -145,25 +145,43 @@ async function navigateToLawText(page, url) {
             return el.textContent.trim();
         });
         const preface = await page.evaluate(() => {
-
-            // Extract the text content of the element with id 'preface' exept the h1 element and except the tag with class 'srnummer'
+            // Function to process footnotes and replace <a> tags with footnote text
+            const processFootnotes = (textElement) => {
+                const anchors = textElement.querySelectorAll('sup a');
+                for (const anchor of anchors) {
+                    const fragment = anchor.getAttribute('href').split('#')[1];
+                    if (fragment) {
+                        const footnoteElement = document.querySelector(`div.footnotes *[id="${fragment}"]`);
+                        if (footnoteElement) {
+                            const footnoteText = ` footnote{${footnoteElement.textContent.trim()}}`;
+                            anchor.outerHTML = footnoteText; // Replace the <a> element with the footnote text
+                        }
+                    }
+                }
+            };
+        
+            // Extract the text content of the element with id 'preface' except the h1 element and the tag with class 'srnummer'
             const element = document.querySelector('#preface');
-            
+        
             if (element) {
-                element.querySelectorAll('br').forEach(br => br.replaceWith(' '));
+                element.querySelectorAll('br').forEach(br => br.replaceWith(' ')); // Replace <br> tags with spaces
                 const h1Element = element.querySelector('h1');
                 if (h1Element) {
-                    // Remove the h1 element from the parent element
-                    h1Element.remove();
+                    h1Element.remove(); // Remove the h1 element from the parent element
                 }
                 const srnummerElement = element.querySelector('.srnummer');
                 if (srnummerElement) {
-                    // Remove the srnummer element from the parent element
-                    srnummerElement.remove();
+                    srnummerElement.remove(); // Remove the srnummer element from the parent element
                 }
-            } 
-            
-            return element ? element.textContent.trim() : " ";
+        
+                // Process footnotes in the element
+                processFootnotes(element);
+        
+                // Return the processed text content
+                return element.textContent.trim();
+            }
+        
+            return " "; // Return a single space if the element doesn't exist or no text is found
         });
         const preamble = await page.$eval('#preamble', (el) => {
             // Define a function to process footnotes within the text element
@@ -360,7 +378,7 @@ async function extractArticles(page, srn, shortName) {
                     absatz = element.firstChild.textContent.trim();
                     // check if the next sibling is a sup element
                     sibling = element.firstChild.nextSibling;
-                    if (sibling && sibling.tagName === 'SUP' && sibling.firstChild.tagName !== 'A') {
+                    if (sibling && ((sibling.tagName === 'SUP' && sibling.firstChild.tagName !== 'A') || (sibling.tagName === 'I' && sibling.firstChild.tagName === 'SUP')) ) {
                         // check if the sub is not a a tag
                         if (sibling.firstChild.tagName !== 'A') {
                             absatz += sibling.textContent.trim();
@@ -437,7 +455,7 @@ async function extractArticles(page, srn, shortName) {
                     results[results.length - 1].text_w_footnotes += tableText;  
 
                     // append p tag text to the last inserted paragraph's text if absatz is empty AND same article_id
-                } else if (element.tagName.toLowerCase() === 'p' && results.length > 0 && results[results.length - 1].article_id.trim() === articleId.trim() && absatz.trim().length === 0) {
+                } else if (element.tagName.toLowerCase() === 'p' && results.length > 0 && results[results.length - 1].article_id.trim() === articleId.trim() && (absatz.trim().length === 0 || results[results.length - 1].absatz.trim() === absatz.trim())) {
                     results[results.length - 1].text_w_footnotes += `\n${processFootnotes(element)}\n`; 
 
                 } else {
@@ -489,11 +507,11 @@ async function extractArticles(page, srn, shortName) {
 
 const db = new Database();
 
-db.dropTable('lawText')
-db.dropTable('articles')
-db.dropTable('errorLog')
-db.dropTable('lawText_history')
-db.dropTable('articles_history')
+//db.dropTable('lawText')
+//db.dropTable('articles')
+//db.dropTable('errorLog')
+//db.dropTable('lawText_history')
+//db.dropTable('articles_history')
 db.createTables();
 db.createErrorTable();
 db.createHistoryTables();

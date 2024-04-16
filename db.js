@@ -28,7 +28,7 @@ class Database {
             CREATE TABLE IF NOT EXISTS lawText (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 insert_tsd TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                srn VARCHAR(35),
+                srn VARCHAR(255),
                 title TEXT,
                 preface TEXT,
                 preamble TEXT,
@@ -47,7 +47,7 @@ class Database {
             CREATE TABLE IF NOT EXISTS articles (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 insert_tsd TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                srn VARCHAR(35),
+                srn VARCHAR(255),
                 shortName VARCHAR(35),
                 book_id VARCHAR(35),
                 book_name TEXT,
@@ -295,7 +295,7 @@ class Database {
             CREATE TABLE IF NOT EXISTS lawText_history (
                 id INT,
                 insert_tsd TIMESTAMP,
-                srn VARCHAR(35),
+                srn VARCHAR(255),
                 title TEXT,
                 preface TEXT,
                 preamble TEXT,
@@ -315,7 +315,7 @@ class Database {
             CREATE TABLE IF NOT EXISTS articles_history (
                 id INT,
                 insert_tsd TIMESTAMP,
-                srn VARCHAR(35),
+                srn VARCHAR(255),
                 shortName VARCHAR(35),
                 book_id VARCHAR(35),
                 book_name TEXT,
