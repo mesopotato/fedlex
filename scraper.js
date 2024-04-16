@@ -134,102 +134,173 @@ async function navigateToLawText(page, url) {
     try {
         
         await page.goto(url, {waitUntil: 'networkidle0', timeout: 120000});
-        await page.waitForSelector('#preface'); // Ensure the 'preface' div is fully loaded
+        let preface, srn, title;
 
-        // Extract static data with corrected selectors
-        const srn = await page.$eval('#preface .srnummer', el => el.textContent.trim());
-        const title = await page.$eval('#preface h1', el => {
-            // Replace <br> tags with a space
-            el.querySelectorAll('br').forEach(br => br.replaceWith(' '));
-            // Return the modified text content, trimming to remove extra spaces
-            return el.textContent.trim();
-        });
-        const preface = await page.evaluate(() => {
-            // Function to process footnotes and replace <a> tags with footnote text
-            const processFootnotes = (textElement) => {
-                const anchors = textElement.querySelectorAll('sup a');
-                for (const anchor of anchors) {
-                    const fragment = anchor.getAttribute('href').split('#')[1];
-                    if (fragment) {
-                        const footnoteElement = document.querySelector(`div.footnotes *[id="${fragment}"]`);
-                        if (footnoteElement) {
-                            const footnoteText = ` footnote{${footnoteElement.textContent.trim()}}`;
-                            anchor.outerHTML = footnoteText; // Replace the <a> element with the footnote text
+        try {
+            // Attempt to wait for the preface element, but proceed if it times out
+            await page.waitForSelector('#preface', { timeout: 10000 }); // Shorter timeout to avoid long waits
+
+            // Since the preface exists, process as normal
+            srn = await page.$eval('#preface .srnummer', el => el.textContent.trim());
+            title = await page.$eval('#preface h1', el => {
+                el.querySelectorAll('br').forEach(br => br.replaceWith(' '));
+                return el.textContent.trim();
+            });
+            preface = await page.evaluate(() => {
+                const processFootnotes = (textElement) => {
+                    const anchors = textElement.querySelectorAll('sup a');
+                    for (const anchor of anchors) {
+                        const fragment = anchor.getAttribute('href').split('#')[1];
+                        if (fragment) {
+                            const footnoteElement = document.querySelector(`div.footnotes *[id="${fragment}"]`);
+                            if (footnoteElement) {
+                                const footnoteText = ` footnote{${footnoteElement.textContent.trim()}}`;
+                                anchor.outerHTML = footnoteText;
+                            }
                         }
                     }
-                }
-            };
-        
-            // Extract the text content of the element with id 'preface' except the h1 element and the tag with class 'srnummer'
-            const element = document.querySelector('#preface');
-        
-            if (element) {
-                element.querySelectorAll('br').forEach(br => br.replaceWith(' ')); // Replace <br> tags with spaces
+                };
+
+                const element = document.querySelector('#preface');
+                element.querySelectorAll('br').forEach(br => br.replaceWith(' '));
                 const h1Element = element.querySelector('h1');
                 if (h1Element) {
-                    h1Element.remove(); // Remove the h1 element from the parent element
+                    h1Element.remove();
                 }
                 const srnummerElement = element.querySelector('.srnummer');
                 if (srnummerElement) {
-                    srnummerElement.remove(); // Remove the srnummer element from the parent element
+                    srnummerElement.remove();
                 }
-        
-                // Process footnotes in the element
+
                 processFootnotes(element);
-        
-                // Return the processed text content
                 return element.textContent.trim();
+            });
+
+        } catch (e) {
+            // Handle the case where preface doesn't exist or timeout occurs
+            console.log('Preface element not found or timeout reached, proceeding without preface.');
+            preface = "Preface doesn't exist.";
+            // extract srn from app-memorial-label tag
+            srn = await page.$eval('app-memorial-label', el => el.textContent.trim());    
+            // extract title from h1 tag with class title
+            title = await page.$eval('h1.title', el => el.textContent.trim()); 
+            // if snr is empty fill placeholder
+            if (srn === '') {
+                srn = 'SRN nicht gefunden';
             }
-        
-            return " "; // Return a single space if the element doesn't exist or no text is found
-        });
-        const preamble = await page.$eval('#preamble', (el) => {
-            // Define a function to process footnotes within the text element
-            const processFootnotes = (textElement) => {
-                const anchors = textElement.querySelectorAll('sup a');
-                for (const anchor of anchors) {
-                    const fragment = anchor.getAttribute('href').split('#')[1];
-                    if (fragment) {
-                        const footnoteElement = document.querySelector(`div.footnotes *[id="${fragment}"]`);
-                        if (footnoteElement) {
-                            const footnoteText = ` footnote{${footnoteElement.textContent.trim()}}`;
-                            anchor.outerHTML = footnoteText; // Replace the <a> element with the footnote text
+            db.insertError(srn, e.message)
+        }
+        let preamble;
+
+        try {
+            // Check if the preamble exists before trying to evaluate it
+            const preambleElement = await page.$('#preamble');
+
+            if (preambleElement) {
+                preamble = await page.evaluate(el => {
+                    // Define a function to process footnotes within the text element
+                    const processFootnotes = (textElement) => {
+                        const anchors = textElement.querySelectorAll('sup a');
+                        for (const anchor of anchors) {
+                            const fragment = anchor.getAttribute('href').split('#')[1];
+                            if (fragment) {
+                                const footnoteElement = document.querySelector(`div.footnotes *[id="${fragment}"]`);
+                                if (footnoteElement) {
+                                    const footnoteText = ` footnote{${footnoteElement.textContent.trim()}}`;
+                                    anchor.outerHTML = footnoteText; // Replace the <a> element with the footnote text
+                                }
+                            }
                         }
-                    }
-                }
-                return textElement.textContent.trim();
-            };
-        
-            // Process footnotes and return the modified text
-            return processFootnotes(el);
-        });
-        const status = await page.evaluate(() => {
-            const inForceStatus = document.querySelector('#sidebar app-in-force-status');
-            return inForceStatus ? inForceStatus.textContent.trim() : "Status unbekannt";
-        });
+                        return textElement.textContent.trim();
+                    };
 
-        // Dynamically extract data from #annexeContent
-        const annexeContentData = await page.evaluate(() => {
-            const dataMap = {
-                'Abkürzung': 'shortName',
-                'Beschluss': 'beschlussDate',
-                'Inkrafttreten': 'inkrafttretenDate',
-                'Quelle': 'quelleName',
-                'Chronologie': 'chronologieLink',
-                'Änderungen': 'changesLink',
-            };
+                    // Process footnotes and return the modified text
+                    return processFootnotes(el);
+                }, preambleElement);
+            } else {
+                // Handle the case where no preamble element is found
+                console.log('No preamble element found.');
+                preamble = "No preamble available."; // Or any other default or fallback action
+            }
+        } catch (e) {
+            console.error('Error processing preamble:', e);
+            preamble = "Error in processing preamble."; // Fallback in case of unexpected errors
+            if (srn === '') {
+                srn = 'SRN nicht gefunden';
+            }
+            db.insertError(srn, e.message)
+        }
+        let status;
 
-            const data = {};
-            document.querySelectorAll('#annexeContent > div').forEach(div => {
-                const keyText = div.querySelector('strong')?.textContent.trim();
-                const value = div.querySelector('p a')?.href || div.querySelector('p')?.textContent.trim();
-                
-                if (keyText && dataMap[keyText]) {
-                    data[dataMap[keyText]] = value;
+        try {
+            // Use page.waitForSelector to optionally wait for the element if it might load dynamically
+            await page.waitForSelector('#sidebar app-in-force-status', { timeout: 5000 })
+                .catch(e => console.log("Waiting for status element timed out, proceeding with default."));
+
+            status = await page.evaluate(() => {
+                const inForceStatus = document.querySelector('#sidebar app-in-force-status');
+                if (inForceStatus) {
+                    return inForceStatus.textContent.trim();
+                } else {
+                    // Log when the element is not found even after waiting
+                    console.log("No in-force status element found.");
+                    return "Status unbekannt"; // Or any other default or fallback action
                 }
             });
-            return data;
-        });
+        } catch (e) {
+            // Handle any other errors that might occur during the evaluate execution or waitForSelector
+            console.error("Error retrieving in-force status:", e);
+            status = "Status unbekannt"; // Fallback in case of unexpected errors
+            if (srn === '') {
+                srn = 'SRN nicht gefunden';
+            }
+            db.insertError(srn, e.message)
+        }
+
+        // Dynamically extract data from #annexeContent
+        let annexeContentData;
+
+        try {
+            // Optional: Wait for the annexeContent to appear if it might load dynamically
+            await page.waitForSelector('#annexeContent > div', { timeout: 5000 })
+                .catch(e => console.log("Waiting for annexe content timed out, proceeding with default."));
+
+            annexeContentData = await page.evaluate(() => {
+                const dataMap = {
+                    'Abkürzung': 'shortName',
+                    'Beschluss': 'beschlussDate',
+                    'Inkrafttreten': 'inkrafttretenDate',
+                    'Quelle': 'quelleName',
+                    'Chronologie': 'chronologieLink',
+                    'Änderungen': 'changesLink',
+                };
+
+                const data = {};
+                const annexeContent = document.querySelector('#annexeContent');
+                if (annexeContent) {
+                    annexeContent.querySelectorAll('#annexeContent > div').forEach(div => {
+                        const keyText = div.querySelector('strong')?.textContent.trim();
+                        const value = div.querySelector('p a')?.href || div.querySelector('p')?.textContent.trim();
+                        
+                        if (keyText && dataMap[keyText]) {
+                            data[dataMap[keyText]] = value;
+                        }
+                    });
+                } else {
+                    console.log("No annexeContent found, returning default empty data object.");
+                    return {};
+                }
+                return data;
+            });
+        } catch (e) {
+            // Handle any errors that might occur during the extraction process
+            console.error("Error retrieving annexe content data:", e);
+            annexeContentData = {}; // Fallback in case of unexpected errors
+            if (srn === '') {
+                srn = 'SRN nicht gefunden';
+            }
+            db.insertError(srn, e.message)
+        }
 
         const adjustedURL = url.replace(/(eli\/)cc\//, '$1oc/');
 
@@ -259,10 +330,18 @@ async function navigateToLawText(page, url) {
             }
         } catch (error) {
             console.error('Error extracting articles:', error);
+            if (srn === '') {
+                srn = 'SRN nicht gefunden';
+            }
+            db.insertError(srn, error.message)
         }     
 
     } catch (error) {
         console.error('Error navigating to or processing law text:', error.message);
+        if (srn === '') {
+            srn = 'SRN nicht gefunden';
+        }
+        db.insertError(srn, error.message )
        
     }
 }
@@ -507,11 +586,11 @@ async function extractArticles(page, srn, shortName) {
 
 const db = new Database();
 
-//db.dropTable('lawText')
-//db.dropTable('articles')
-//db.dropTable('errorLog')
-//db.dropTable('lawText_history')
-//db.dropTable('articles_history')
+db.dropTable('lawText')
+db.dropTable('articles')
+db.dropTable('errorLog')
+db.dropTable('lawText_history')
+db.dropTable('articles_history')
 db.createTables();
 db.createErrorTable();
 db.createHistoryTables();

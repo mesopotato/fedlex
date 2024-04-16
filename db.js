@@ -269,7 +269,7 @@ class Database {
                             resolve({ message: 'Article updated', details: updateResults });
                         });
                     } else {
-                        console.log('No update needed for SRN:', completeData.srn, 'Article ID:', completeData.article_id, 'Absatz:', completeData.absatz, 'Ziffer:', completeData.ziffer_id, 'Chapter:', completeData.chapter_id, 'Section:', completeData.section_id, 'Title:', completeData.title_id);
+                        //console.log('No update needed for SRN:', completeData.srn, 'Article ID:', completeData.article_id, 'Absatz:', completeData.absatz, 'Ziffer:', completeData.ziffer_id, 'Chapter:', completeData.chapter_id, 'Section:', completeData.section_id, 'Title:', completeData.title_id);
                         resolve({ message: 'No update needed', details: existingData });
                     }
                 } else {
